@@ -752,7 +752,7 @@ PlayerTab:Button({
 
 PlayerTab:Slider({
     Title = "传送距离",
-    Desc = "调整目标玩家传送过来时与你的距离（格）",
+    Desc = "调整传送时与目标玩家的距离（格）",
     Step = 1,
     Value = { Min = 1, Max = 50, Default = 5 },
     Callback = function(value)
@@ -853,6 +853,197 @@ PlayerTab:Toggle({
     end,
 })
 
+PlayerTab:Section({ Title = "传送到目标玩家旁边" })
+
+local function getSelfHRP()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getTargetHRP()
+    if not selectedTargetPlayer then return nil end
+    local char = selectedTargetPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function teleportSelfToTarget()
+    local myRoot = getSelfHRP()
+    local targetRoot = getTargetHRP()
+    if not myRoot or not targetRoot then return false end
+    local offset = targetRoot.CFrame.LookVector * teleportDistance + Vector3.new(0, 3, 0)
+    local rotationOnly = myRoot.CFrame - myRoot.Position
+    pcall(function()
+        myRoot.CFrame = CFrame.new(targetRoot.Position + offset) * rotationOnly
+    end)
+    return true
+end
+
+PlayerTab:Button({
+    Title = "传送到玩家旁边（单次）",
+    Desc = "把你自己瞬间传送到选中玩家旁边，距离由上方“传送距离”控制",
+    Callback = function()
+        if teleportSelfToTarget() then
+            WindUI:Notify({ Title = "玩家选项", Content = "已传送到 " .. selectedTargetPlayer.Name .. " 旁边", Duration = 3, Icon = "arrow-up" })
+        else
+            WindUI:Notify({ Title = "玩家选项", Content = "传送失败：请先选择玩家，或角色尚未加载", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+local loopSelfTeleportEnabled = false
+local loopSelfTeleportConn = nil
+
+PlayerTab:Toggle({
+    Title = "循环传送到玩家旁边",
+    Desc = "开启后持续把你自己传送到选中玩家旁边，关闭后停止",
+    Value = false,
+    Callback = function(state)
+        loopSelfTeleportEnabled = state
+        if loopSelfTeleportConn then
+            loopSelfTeleportConn:Disconnect()
+            loopSelfTeleportConn = nil
+        end
+        if not state then
+            WindUI:Notify({ Title = "玩家选项", Content = "循环自身传送已停止", Duration = 2, Icon = "square" })
+            return
+        end
+        loopSelfTeleportConn = RunService.Heartbeat:Connect(function()
+            if not loopSelfTeleportEnabled then return end
+            if selectedTargetPlayer then
+                pcall(teleportSelfToTarget)
+            end
+        end)
+        WindUI:Notify({ Title = "玩家选项", Content = "循环自身传送已开启", Duration = 3, Icon = "refresh-cw" })
+    end,
+})
+
+PlayerTab:Section({ Title = "环绕选中玩家" })
+
+local orbitRadius = 10
+local orbitSpeed = 90
+local orbitEnabled = false
+local orbitConn = nil
+local orbitAngle = 0
+local orbitLockedRotation = nil
+local orbitRadiusSlider = nil
+local orbitRadiusInput = nil
+
+local function stopOrbit(silent)
+    local wasRunning = orbitEnabled
+    orbitEnabled = false
+    if orbitConn then
+        orbitConn:Disconnect()
+        orbitConn = nil
+    end
+    if not silent and wasRunning then
+        WindUI:Notify({ Title = "环绕玩家", Content = "环绕已停止", Duration = 2, Icon = "square" })
+    end
+end
+
+orbitRadiusSlider = PlayerTab:Slider({
+    Title = "环绕半径（滑动）",
+    Desc = "设置环绕选中玩家时的圆周半径（格）",
+    Step = 1,
+    Value = { Min = 1, Max = 200, Default = 10 },
+    Callback = function(v)
+        orbitRadius = v
+        if orbitRadiusInput and orbitRadiusInput.Set then
+            pcall(function() orbitRadiusInput:Set(tostring(v)) end)
+        end
+    end,
+})
+
+orbitRadiusInput = PlayerTab:Input({
+    Title = "环绕半径（输入）",
+    Desc = "输入环绕半径后点击“开始环绕”生效（范围 1 - 200）",
+    Value = "10",
+    Placeholder = "输入半径 1 - 200",
+    Callback = function(text)
+        local n = tonumber(text)
+        if n then
+            n = math.clamp(math.floor(n + 0.5), 1, 200)
+            orbitRadius = n
+            if orbitRadiusSlider and orbitRadiusSlider.Set then
+                pcall(function() orbitRadiusSlider:Set(n) end)
+            end
+        end
+    end,
+})
+
+PlayerTab:Slider({
+    Title = "环绕速度（度/秒）",
+    Desc = "设置环绕的角速度，数值越大转得越快",
+    Step = 5,
+    Value = { Min = 10, Max = 720, Default = 90 },
+    Callback = function(v) orbitSpeed = v end,
+})
+
+PlayerTab:Button({
+    Title = "开始环绕选中玩家",
+    Desc = "先把你传送到选中玩家旁边，然后按当前半径和速度开始环绕",
+    Callback = function()
+        if not selectedTargetPlayer then
+            WindUI:Notify({ Title = "环绕玩家", Content = "请先选择目标玩家", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        local targetRoot = getTargetHRP()
+        if not targetRoot then
+            WindUI:Notify({ Title = "环绕玩家", Content = "目标玩家角色未加载", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        local myRoot = getSelfHRP()
+        if not myRoot then
+            WindUI:Notify({ Title = "环绕玩家", Content = "你的角色未加载", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        stopOrbit(true)
+        orbitEnabled = true
+        orbitAngle = 0
+        orbitLockedRotation = myRoot.CFrame - myRoot.Position
+        pcall(teleportSelfToTarget)
+        orbitConn = RunService.Heartbeat:Connect(function(dt)
+            if not orbitEnabled then return end
+            local mRoot = getSelfHRP()
+            local tRoot = getTargetHRP()
+            if not mRoot or not tRoot then
+                stopOrbit(true)
+                WindUI:Notify({ Title = "环绕玩家", Content = "目标玩家角色丢失，环绕已自动停止", Duration = 3, Icon = "alert-circle" })
+                return
+            end
+            orbitAngle = orbitAngle + math.rad(orbitSpeed) * dt
+            if orbitAngle > math.rad(360) then orbitAngle = orbitAngle - math.rad(360) end
+            local offset = Vector3.new(
+                math.cos(orbitAngle) * orbitRadius,
+                3,
+                math.sin(orbitAngle) * orbitRadius
+            )
+            local newPos = tRoot.Position + offset
+            local rot = orbitLockedRotation or (mRoot.CFrame - mRoot.Position)
+            pcall(function()
+                mRoot.CFrame = CFrame.new(newPos) * rot
+            end)
+        end)
+        WindUI:Notify({
+            Title = "环绕玩家",
+            Content = string.format("开始环绕 %s｜半径 %d｜速度 %d°/s", selectedTargetPlayer.Name, orbitRadius, orbitSpeed),
+            Duration = 4,
+            Icon = "rotate-cw",
+        })
+    end,
+})
+
+PlayerTab:Button({
+    Title = "停止环绕",
+    Desc = "停止环绕选中玩家",
+    Callback = function()
+        if orbitEnabled then
+            stopOrbit(false)
+        else
+            WindUI:Notify({ Title = "环绕玩家", Content = "当前没有在环绕", Duration = 2, Icon = "info" })
+        end
+    end,
+})
+
 Players.PlayerAdded:Connect(function()
     task.wait(0.3)
     pcall(function() playerDropdown:Refresh(getPlayerNames()) end)
@@ -861,6 +1052,7 @@ end)
 Players.PlayerRemoving:Connect(function(player)
     if player == selectedTargetPlayer then
         selectedTargetPlayer = nil
+        stopOrbit(true)
     end
     task.wait(0.3)
     pcall(function() playerDropdown:Refresh(getPlayerNames()) end)
@@ -2059,19 +2251,19 @@ SettingsTab:Button({
 SettingsTab:Section({ Title = "使用提示" })
 SettingsTab:Paragraph({
     Title = "温馨提示",
-    Desc = "1. 顶部搜索栏：WindUI 内置搜索，可快速定位功能。\n2. 位置管理：保存当前位置并在需要时传送回去。\n3. 内置飞行：点击“开启飞行（自带）”后出现屏幕方向按钮，点 ✕ 关闭飞行。\n4. 自定义血量：滑动设置血量，点“应用血量”生效，点“恢复默认血量”复原。\n5. 无限跳：开启后可空中连续跳跃，关闭恢复默认。\n6. 跳跃高度：可调整角色跳跃最高高度，点“应用跳跃高度”生效。\n7. 帧率设置：滑条拉到 60 及以下会自动锁定；60 以上或输入框输入后需点“确认应用帧率上限”；锁帧会持续生效，点击“解除帧率锁定”可恢复。\n8. 血量锁定：开启后血量持续锁定为滑条设定值。\n9. 别的脚本：可加载黑白脚本、皮脚本、rb脚本中心。\n10. 无敌少能飞侠FE：在通用功能中，一键加载外部FE飞行脚本。\n11. 防甩飞1.0：在防御功能中开启，持续重置异常速度。",
+    Desc = "1. 顶部搜索栏：WindUI 内置搜索，可快速定位功能。\n2. 位置管理：保存当前位置并在需要时传送回去。\n3. 内置飞行：点击“开启飞行（自带）”后出现屏幕方向按钮，点 ✕ 关闭飞行。\n4. 自定义血量：滑动设置血量，点“应用血量”生效，点“恢复默认血量”复原。\n5. 无限跳：开启后可空中连续跳跃，关闭恢复默认。\n6. 跳跃高度：可调整角色跳跃最高高度，点“应用跳跃高度”生效。\n7. 帧率设置：滑条拉到 60 及以下会自动锁定；60 以上或输入框输入后需点“确认应用帧率上限”；锁帧会持续生效，点击“解除帧率锁定”可恢复。\n8. 血量锁定：开启后血量持续锁定为滑条设定值。\n9. 别的脚本：可加载黑白脚本、皮脚本、rb脚本中心。\n10. 无敌少能飞侠FE：在通用功能中，一键加载外部FE飞行脚本。\n11. 防甩飞1.0：在防御功能中开启，持续重置异常速度。\n12. 玩家选项新增：传送到玩家旁边（单次/循环）、环绕选中玩家（可设半径与速度）。",
 })
 
 local AboutTab = Window:Tab({ Title = "关于", Icon = "info" })
 AboutTab:Section({ Title = "脚本信息" })
 AboutTab:Paragraph({
     Title = "PLH 脚本",
-    Desc = "版本：v0.56.8\n功能：速度 / 自带飞行 / 无敌少能飞侠FE / 寂寞甩飞 / 位置管理 / 道具扫描获取 / 玩家选择传送 / 静默触摸甩飞 / 隐身 / 穿墙 / 无限跳 / 跳跃高度 / 自定义血量 / 血量锁定 / 帧率上限 / 防甩飞1.0 / 别的脚本加载 / 角色特效 / 天空修改 / NPC操控",
+    Desc = "版本：v0.56.8\n功能：速度 / 自带飞行 / 无敌少能飞侠FE / 寂寞甩飞 / 位置管理 / 道具扫描获取 / 玩家选择传送 / 传送到玩家旁边 / 环绕玩家 / 静默触摸甩飞 / 隐身 / 穿墙 / 无限跳 / 跳跃高度 / 自定义血量 / 血量锁定 / 帧率上限 / 防甩飞1.0 / 别的脚本加载 / 角色特效 / 天空修改 / NPC操控",
 })
 AboutTab:Section({ Title = "v0.56.8 更新内容" })
 AboutTab:Paragraph({
     Title = "本次更新",
-    Desc = "1. 新增“无敌少能飞侠FE”按钮（通用功能）\n2. 新增“防甩飞1.0”（防御功能）\n3. 防甩飞原理：持续监控自身AssemblyLinearVelocity/AssemblyAngularVelocity并清零异常值\n4. 版本号更新至 v0.56.8",
+    Desc = "1. 玩家选项新增“传送到玩家旁边（单次）”\n2. 玩家选项新增“循环传送到玩家旁边”\n3. 玩家选项新增“环绕选中玩家”（滑条+输入设置半径、速度）\n4. 保留此前无敌少能飞侠FE与防甩飞1.0\n5. 版本号 v0.56.8",
 })
 AboutTab:Section({ Title = "关于作者" })
 AboutTab:Paragraph({
