@@ -1,0 +1,2069 @@
+local WINDUI_URL = "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+
+local ok, WindUI = pcall(function()
+    local src = game:HttpGet(WINDUI_URL)
+    local fn, err = loadstring(src)
+    if not fn then error(err) end
+    return fn()
+end)
+
+if not ok then
+    warn("[PLH] WindUI 加载失败：" .. tostring(WindUI))
+    return
+end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local PhysicsService = game:GetService("PhysicsService")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+pcall(function()
+    PhysicsService:RegisterCollisionGroup("PLH_Self")
+    PhysicsService:CollisionGroupSetCollidable("PLH_Self", "Default", false)
+end)
+
+local DEFAULT_SPEED = 16
+local MAX_SPEED = 500
+local currentSpeed = DEFAULT_SPEED
+local noclipEnabled = false
+
+local function getHumanoid()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+local function setSpeed(value)
+    currentSpeed = value
+    local hum = getHumanoid()
+    if hum then
+        pcall(function() hum.WalkSpeed = value end)
+    end
+end
+
+local function reapplyNoclip()
+    if not noclipEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then part.CanCollide = false end
+    end
+end
+
+local customHealth = 100
+local originalMaxHealth = nil
+local healthLockEnabled = false
+local healthLockConn = nil
+
+local function applyCustomHealth(value)
+    local hum = getHumanoid()
+    if not hum then return false end
+    if originalMaxHealth == nil then
+        originalMaxHealth = hum.MaxHealth
+    end
+    pcall(function()
+        if value > originalMaxHealth then
+            hum.MaxHealth = value
+        else
+            hum.MaxHealth = originalMaxHealth
+        end
+        hum.Health = value
+    end)
+    return true
+end
+
+local function restoreDefaultHealth()
+    local hum = getHumanoid()
+    if not hum then return false end
+    pcall(function()
+        hum.MaxHealth = originalMaxHealth or 100
+        hum.Health = hum.MaxHealth
+    end)
+    return true
+end
+
+local currentJumpHeight = 7.2
+local DEFAULT_JUMP_HEIGHT = 7.2
+
+local function applyJumpHeight(value)
+    value = tonumber(value)
+    if not value then return false end
+    currentJumpHeight = value
+    local hum = getHumanoid()
+    if hum then
+        pcall(function()
+            hum.UseJumpPower = false
+            hum.JumpHeight = value
+        end)
+        return true
+    end
+    return false
+end
+
+local function restoreDefaultJumpHeight()
+    currentJumpHeight = DEFAULT_JUMP_HEIGHT
+    local hum = getHumanoid()
+    if hum then
+        pcall(function()
+            hum.UseJumpPower = true
+            hum.JumpPower = 50
+            hum.JumpHeight = DEFAULT_JUMP_HEIGHT
+        end)
+        return true
+    end
+    return false
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.6)
+    setSpeed(currentSpeed)
+    reapplyNoclip()
+    if healthLockEnabled then
+        applyCustomHealth(customHealth)
+    end
+    applyJumpHeight(currentJumpHeight)
+end)
+
+task.spawn(function()
+    RunService.Stepped:Connect(function()
+        pcall(function()
+            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+            sethiddenproperty(LocalPlayer, "MaximumSimulationRadius", math.huge)
+        end)
+    end)
+end)
+
+local Window = WindUI:CreateWindow({
+    Title = "PLH脚本",
+    Icon = "rbxassetid://6031075931",
+    Author = "PLH | v0.45.6",
+    Folder = "PLH",
+    Size = UDim2.fromOffset(580, 460),
+    Transparent = true,
+    Theme = "Dark",
+    User = { Enabled = true, Anonymous = false },
+    SideBarWidth = 200,
+    Background = "rbxassetid://13511292255",
+    HasOutline = true,
+    SearchBar = true,
+})
+
+local MainTab = Window:Tab({ Title = "主功能", Icon = "gamepad-2" })
+MainTab:Section({ Title = "玩家" })
+
+MainTab:Slider({
+    Title = "移动速度",
+    Desc = "拖动进度条修改人物移动速度（默认 16）",
+    Step = 1,
+    Value = { Min = 16, Max = MAX_SPEED, Default = DEFAULT_SPEED },
+    Callback = function(value) setSpeed(value) end,
+})
+
+MainTab:Button({
+    Title = "重置速度",
+    Callback = function()
+        setSpeed(DEFAULT_SPEED)
+        WindUI:Notify({ Title = "PLH脚本", Content = "移动速度已重置为 16", Duration = 3, Icon = "rotate-ccw" })
+    end,
+})
+
+MainTab:Section({ Title = "额外功能" })
+
+MainTab:Button({
+    Title = "加载寂寞甩飞",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/tapashazra2345-netizen/RXS-FLINGG-V4/refs/heads/main/SCRIPT"))()
+        end)
+        WindUI:Notify({ Title = "PLH脚本", Content = "寂寞甩飞脚本已加载", Duration = 4, Icon = "users" })
+    end,
+})
+
+local flying = false
+local flyHeld = { up = false, down = false, left = false, right = false, forward = false, backward = false }
+local flySpeed = 80
+local flyConn = nil
+local flyGui = nil
+local savedFlyWalkSpeed = nil
+
+local function destroyFlyUI()
+    if flyGui then
+        pcall(function() flyGui:Destroy() end)
+        flyGui = nil
+    end
+end
+
+local function stopFly()
+    if not flying and not flyGui then return end
+    flying = false
+
+    if flyConn then
+        flyConn:Disconnect()
+        flyConn = nil
+    end
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local bv = hrp:FindFirstChild("PLH_FlyVelocity")
+        if bv then bv:Destroy() end
+        local bg = hrp:FindFirstChild("PLH_FlyGyro")
+        if bg then bg:Destroy() end
+    end
+
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = savedFlyWalkSpeed or currentSpeed
+    end
+    savedFlyWalkSpeed = nil
+
+    for k in pairs(flyHeld) do flyHeld[k] = false end
+
+    destroyFlyUI()
+
+    WindUI:Notify({ Title = "飞行", Content = "飞行已关闭", Duration = 2, Icon = "plane" })
+end
+
+local function buildFlyUI()
+    if flyGui then return end
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "PLH_FlyUI"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.Parent = playerGui
+
+    local main = Instance.new("Frame")
+    main.Size = UDim2.fromOffset(240, 340)
+    main.Position = UDim2.new(0.5, -120, 0.5, -170)
+    main.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    main.BackgroundTransparency = 0.15
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.Draggable = true
+    main.Parent = sg
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = main
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(100, 140, 255)
+    stroke.Thickness = 2
+    stroke.Transparency = 0.3
+    stroke.Parent = main
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -60, 0, 30)
+    title.Position = UDim2.fromOffset(15, 8)
+    title.BackgroundTransparency = 1
+    title.Text = "✈ PLH 飞行  |  速度:" .. flySpeed
+    title.TextColor3 = Color3.fromRGB(150, 180, 255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 15
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = main
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.fromOffset(30, 30)
+    closeBtn.Position = UDim2.new(1, -40, 0, 8)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 18
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = main
+    local cc = Instance.new("UICorner")
+    cc.CornerRadius = UDim.new(0, 8)
+    cc.Parent = closeBtn
+    closeBtn.MouseButton1Click:Connect(stopFly)
+
+    local function makeBtn(text, pos, dirKey)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.fromOffset(60, 60)
+        btn.Position = pos
+        btn.BackgroundColor3 = Color3.fromRGB(45, 50, 75)
+        btn.Text = text
+        btn.TextColor3 = Color3.fromRGB(220, 230, 255)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 22
+        btn.BorderSizePixel = 0
+        btn.Parent = main
+
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 10)
+        c.Parent = btn
+
+        local s = Instance.new("UIStroke")
+        s.Color = Color3.fromRGB(100, 140, 255)
+        s.Thickness = 1.5
+        s.Transparency = 0.5
+        s.Parent = btn
+
+        local function press()
+            flyHeld[dirKey] = true
+            btn.BackgroundColor3 = Color3.fromRGB(80, 110, 200)
+        end
+        local function release()
+            flyHeld[dirKey] = false
+            btn.BackgroundColor3 = Color3.fromRGB(45, 50, 75)
+        end
+
+        btn.MouseButton1Down:Connect(press)
+        btn.MouseButton1Up:Connect(release)
+        btn.MouseLeave:Connect(release)
+        btn.TouchTap:Connect(function()
+            press()
+            task.delay(0.15, release)
+        end)
+    end
+
+    makeBtn("↑", UDim2.fromOffset(90, 50), "up")
+    makeBtn("←", UDim2.fromOffset(15, 120), "left")
+    makeBtn("→", UDim2.fromOffset(165, 120), "right")
+    makeBtn("↓", UDim2.fromOffset(90, 190), "down")
+    makeBtn("前", UDim2.fromOffset(15, 260), "forward")
+    makeBtn("后", UDim2.fromOffset(165, 260), "backward")
+
+    flyGui = sg
+end
+
+local function startFly()
+    if flying then
+        WindUI:Notify({ Title = "飞行", Content = "飞行已经在运行", Duration = 2, Icon = "info" })
+        return
+    end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then
+        WindUI:Notify({ Title = "飞行", Content = "角色尚未加载", Duration = 3, Icon = "alert-circle" })
+        return
+    end
+
+    flying = true
+    savedFlyWalkSpeed = hum.WalkSpeed
+    hum.WalkSpeed = 0
+
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "PLH_FlyVelocity"
+    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
+
+    local bg = Instance.new("BodyGyro")
+    bg.Name = "PLH_FlyGyro"
+    bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+    bg.P = 10000
+    bg.D = 500
+    bg.CFrame = hrp.CFrame
+    bg.Parent = hrp
+
+    buildFlyUI()
+
+    flyConn = RunService.Heartbeat:Connect(function()
+        if not flying then return end
+        local c = LocalPlayer.Character
+        local h = c and c:FindFirstChild("HumanoidRootPart")
+        if not h then return end
+        local v = h:FindFirstChild("PLH_FlyVelocity")
+        local g = h:FindFirstChild("PLH_FlyGyro")
+        if not v or not g then return end
+
+        local cam = workspace.CurrentCamera
+        local dir = Vector3.zero
+        if flyHeld.up then dir = dir + Vector3.new(0, 1, 0) end
+        if flyHeld.down then dir = dir + Vector3.new(0, -1, 0) end
+        if flyHeld.left then dir = dir - cam.CFrame.RightVector end
+        if flyHeld.right then dir = dir + cam.CFrame.RightVector end
+        if flyHeld.forward then dir = dir + cam.CFrame.LookVector end
+        if flyHeld.backward then dir = dir - cam.CFrame.LookVector end
+
+        v.Velocity = (dir.Magnitude > 0) and (dir.Unit * flySpeed) or Vector3.zero
+        g.CFrame = cam.CFrame
+    end)
+
+    WindUI:Notify({ Title = "飞行", Content = "飞行已开启！使用屏幕按钮控制方向", Duration = 3, Icon = "plane" })
+end
+
+MainTab:Button({
+    Title = "开启飞行（自带）",
+    Desc = "点击开启内置飞行，屏幕会出现上下左右/前后按钮，点 ✕ 关闭飞行",
+    Callback = startFly,
+})
+
+local LocationTab = Window:Tab({ Title = "位置管理", Icon = "map-pin" })
+LocationTab:Section({ Title = "保存与传送" })
+
+LocationTab:Paragraph({
+    Title = "使用方法",
+    Desc = "1. 站在想去的位置，点击“保存此位置”，该位置会记录到下方列表。\n2. 在“已保存位置”下拉框中选择一个位置，会弹出选中提示。\n3. 点击“传送到保存位置”，角色会瞬间移动到该位置。",
+})
+
+local savedPositions = {}
+local savedPositionCounter = 0
+local selectedPositionName = nil
+
+local locationDropdown = LocationTab:Dropdown({
+    Title = "已保存位置",
+    Desc = "点击“保存此位置”后，位置会出现在这里",
+    Values = {},
+    Value = nil,
+    Callback = function(name)
+        selectedPositionName = name
+        if name then
+            WindUI:Notify({ Title = "位置管理", Content = "已选中：" .. name, Duration = 3, Icon = "map-pin" })
+        end
+    end,
+})
+
+local function getSavedPositionNames()
+    local names = {}
+    for _, entry in ipairs(savedPositions) do
+        table.insert(names, entry.name)
+    end
+    return names
+end
+
+LocationTab:Button({
+    Title = "保存此位置",
+    Desc = "把当前位置记录到已保存位置列表",
+    Callback = function()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            WindUI:Notify({ Title = "位置管理", Content = "角色尚未加载", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        savedPositionCounter += 1
+        local pos = hrp.Position
+        local name = string.format("位置%d (%.0f, %.0f, %.0f)", savedPositionCounter, pos.X, pos.Y, pos.Z)
+        table.insert(savedPositions, { name = name, cframe = hrp.CFrame })
+        pcall(function() locationDropdown:Refresh(getSavedPositionNames()) end)
+        WindUI:Notify({ Title = "位置管理", Content = "已保存：" .. name, Duration = 3, Icon = "check-circle" })
+    end,
+})
+
+LocationTab:Button({
+    Title = "传送到保存位置",
+    Desc = "传送到下拉框中选中的位置",
+    Callback = function()
+        local name = selectedPositionName or (locationDropdown and locationDropdown.Value)
+        if not name then
+            WindUI:Notify({ Title = "位置管理", Content = "请先在下拉框选择一个已保存位置", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        local target = nil
+        for _, entry in ipairs(savedPositions) do
+            if entry.name == name then
+                target = entry
+                break
+            end
+        end
+        if not target then
+            WindUI:Notify({ Title = "位置管理", Content = "未找到该位置", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            WindUI:Notify({ Title = "位置管理", Content = "角色尚未加载", Duration = 3, Icon = "alert-circle" })
+            return
+        end
+        pcall(function() hrp.CFrame = target.cframe end)
+        WindUI:Notify({ Title = "位置管理", Content = "已传送到：" .. name, Duration = 3, Icon = "arrow-right" })
+    end,
+})
+
+local ItemTab = Window:Tab({ Title = "道具选项", Icon = "box" })
+ItemTab:Section({ Title = "全游戏道具扫描与获取" })
+
+ItemTab:Paragraph({
+    Title = "使用方法",
+    Desc = "1. 点击“扫描全游戏道具”，脚本会扫描游戏里的物品与 Tool。\n2. 在下拉框选择想要的道具。\n3. 点击“获取选中道具”，道具会直接放进你的背包，同时尝试触发游戏购买远程。",
+})
+
+local capturedBuyRemotes = {}
+local hookInstalled = false
+local scannedItems = {}
+local scannedRemotes = {}
+local selectedItemName = nil
+
+local function installHook()
+    if hookInstalled then return end
+    hookInstalled = true
+    pcall(function()
+        local oldNamecall
+        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer" or method == "InvokeServer" then
+                local name = tostring(self.Name):lower()
+                if name:find("buy") or name:find("purchase") or name:find("getitem") or name:find("claim") or name:find("shop") or name:find("give") then
+                    capturedBuyRemotes[self] = true
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+    end)
+end
+
+local function findItemContainers()
+    local containers = {}
+    local seen = {}
+    local candidates = {
+        "GameItems", "Items", "Weapons", "ShopItems", "ItemData", "Swords", "Guns",
+        "Pets", "Tools", "Catalog", "Inventory", "ItemList", "ItemsFolder", "Shop",
+        "Assets", "Database", "ItemDB", "StoreItems", "Cosmetics", "Vehicles"
+    }
+    local roots = {
+        game:GetService("ReplicatedStorage"),
+        game:GetService("ServerStorage"),
+        game:GetService("StarterPack"),
+        game:GetService("Workspace"),
+    }
+    for _, root in ipairs(roots) do
+        for _, name in ipairs(candidates) do
+            local ok2, obj = pcall(function() return root:FindFirstChild(name, true) end)
+            if ok2 and obj and (obj:IsA("Folder") or obj:IsA("Model") or obj:IsA("Configuration")) then
+                if not seen[obj] then
+                    seen[obj] = true
+                    table.insert(containers, obj)
+                end
+            end
+        end
+    end
+    return containers
+end
+
+local itemDropdown = ItemTab:Dropdown({
+    Title = "选择道具",
+    Desc = "扫描后在此选择想要获取的道具",
+    Values = {},
+    Value = nil,
+    Callback = function(name)
+        selectedItemName = name
+    end,
+})
+
+ItemTab:Button({
+    Title = "扫描全游戏道具",
+    Desc = "扫描物品文件夹与 Tool 并填充下拉列表",
+    Callback = function()
+        installHook()
+        local containers = findItemContainers()
+        if #containers == 0 then
+            WindUI:Notify({ Title = "道具扫描", Content = "未找到物品文件夹。请先在游戏里手动购买一次任意道具，再点此按钮。", Duration = 8, Icon = "search-x" })
+            return
+        end
+
+        scannedItems = {}
+        local seenNames = {}
+        for _, container in ipairs(containers) do
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Instance") and not seenNames[child.Name] then
+                    seenNames[child.Name] = true
+                    table.insert(scannedItems, { name = child.Name, container = container.Name })
+                end
+            end
+        end
+
+        if #scannedItems == 0 then
+            WindUI:Notify({ Title = "道具扫描", Content = "找到了文件夹，但里面没有物品。", Duration = 5, Icon = "search-x" })
+            return
+        end
+
+        scannedRemotes = {}
+        for remote in pairs(capturedBuyRemotes) do
+            table.insert(scannedRemotes, remote)
+        end
+        if #scannedRemotes == 0 then
+            for _, obj in ipairs(game:GetDescendants()) do
+                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+                    local n = tostring(obj.Name):lower()
+                    if n:find("buy") or n:find("purchase") or n:find("getitem") or n:find("claim") or n:find("shop") or n:find("give") then
+                        table.insert(scannedRemotes, obj)
+                    end
+                end
+            end
+        end
+
+        local names = {}
+        for _, e in ipairs(scannedItems) do
+            table.insert(names, e.name)
+        end
+
+        pcall(function() itemDropdown:Refresh(names) end)
+
+        local content
+        if #scannedRemotes == 0 then
+            content = string.format("扫描到 %d 个道具，但未找到购买远程。获取时仍会尝试直接放入背包。", #scannedItems)
+        else
+            content = string.format("扫描完成！道具 %d 个，购买远程 %d 个。", #scannedItems, #scannedRemotes)
+        end
+
+        WindUI:Notify({ Title = "道具扫描", Content = content, Duration = 6, Icon = "search-check" })
+    end,
+})
+
+local function placeItemInBackpack(itemName)
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if not backpack then
+        local char = LocalPlayer.Character
+        backpack = char and char:FindFirstChild("Backpack")
+    end
+    if not backpack then
+        pcall(function()
+            backpack = Instance.new("Backpack")
+            backpack.Parent = LocalPlayer
+        end)
+    end
+    if not backpack then return false end
+
+    local roots = {
+        game:GetService("ReplicatedStorage"),
+        game:GetService("ServerStorage"),
+        game:GetService("StarterPack"),
+        game:GetService("Workspace"),
+    }
+
+    for _, root in ipairs(roots) do
+        local ok2, found = pcall(function() return root:FindFirstChild(itemName, true) end)
+        if ok2 and found and found ~= backpack then
+            if found:IsA("Tool") then
+                local clone = found:Clone()
+                clone.Parent = backpack
+                return true
+            elseif found:IsA("Model") then
+                local handle = found:FindFirstChild("Handle") or found:FindFirstChildWhichIsA("BasePart", true)
+                if handle then
+                    local tool = Instance.new("Tool")
+                    tool.Name = itemName
+                    tool.RequiresHandle = false
+                    found:Clone().Parent = tool
+                    tool.Parent = backpack
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function tryFireRemotes(itemName)
+    local sent = 0
+    if #scannedRemotes == 0 then return sent end
+
+    local payloads = {
+        { itemName },
+        { itemName, 1 },
+        { itemName, "Buy" },
+        { itemName, 1, "Buy" },
+        { "Buy", itemName },
+        { itemName, true },
+    }
+
+    for _, remote in ipairs(scannedRemotes) do
+        for _, args in ipairs(payloads) do
+            local ok2 = pcall(function()
+                if remote:IsA("RemoteEvent") then
+                    remote:FireServer(table.unpack(args))
+                elseif remote:IsA("RemoteFunction") then
+                    remote:InvokeServer(table.unpack(args))
+                end
+            end)
+            if ok2 then sent = sent + 1 end
+            task.wait(0.03)
+        end
+    end
+    return sent
+end
+
+ItemTab:Button({
+    Title = "获取选中道具",
+    Desc = "直接放进背包，并尝试触发购买远程",
+    Callback = function()
+        local name = selectedItemName or (itemDropdown and itemDropdown.Value)
+        if not name then
+            WindUI:Notify({ Title = "道具获取", Content = "请先扫描并选择道具。", Duration = 4, Icon = "alert-circle" })
+            return
+        end
+
+        local placed = placeItemInBackpack(name)
+        local sent = tryFireRemotes(name)
+
+        if placed and sent > 0 then
+            WindUI:Notify({ Title = "道具获取", Content = "「" .. name .. "」已放进背包，并触发 " .. sent .. " 次远程。", Duration = 5, Icon = "check-circle" })
+        elseif placed then
+            WindUI:Notify({ Title = "道具获取", Content = "「" .. name .. "」已放进背包（本地）。", Duration = 5, Icon = "check-circle" })
+        elseif sent > 0 then
+            WindUI:Notify({ Title = "道具获取", Content = "未找到同名 Tool，已触发 " .. sent .. " 次远程尝试。", Duration = 5, Icon = "hand" })
+        else
+            WindUI:Notify({ Title = "道具获取", Content = "未找到「" .. name .. "」的 Tool 或远程，无法获取。", Duration = 5, Icon = "alert-circle" })
+        end
+    end,
+})
+
+ItemTab:Button({
+    Title = "获取全部道具",
+    Desc = "把所有扫描到的道具放进背包并触发远程",
+    Callback = function()
+        if #scannedItems == 0 then
+            WindUI:Notify({ Title = "道具获取", Content = "请先点击“扫描全游戏道具”。", Duration = 4, Icon = "alert-circle" })
+            return
+        end
+
+        local placedCount = 0
+        local sentCount = 0
+        for _, entry in ipairs(scannedItems) do
+            if placeItemInBackpack(entry.name) then placedCount = placedCount + 1 end
+            sentCount = sentCount + tryFireRemotes(entry.name)
+            task.wait(0.05)
+        end
+
+        WindUI:Notify({
+            Title = "道具获取",
+            Content = string.format("已放入背包 %d 个，触发远程 %d 次。", placedCount, sentCount),
+            Duration = 6,
+            Icon = "check-circle",
+        })
+    end,
+})
+
+local PlayerTab = Window:Tab({ Title = "玩家选项", Icon = "users" })
+PlayerTab:Section({ Title = "选择目标玩家" })
+
+local selectedTargetPlayer = nil
+local teleportDistance = 5
+local loopTeleportConn = nil
+local rotateConn = nil
+local loopTeleportEnabled = false
+local rotateEnabled = false
+
+local function getPlayerNames()
+    local names = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            table.insert(names, p.Name)
+        end
+    end
+    return names
+end
+
+local playerDropdown = PlayerTab:Dropdown({
+    Title = "选择目标玩家",
+    Desc = "选择后，下方操作会作用于此玩家",
+    Values = getPlayerNames(),
+    Value = nil,
+    Callback = function(name)
+        selectedTargetPlayer = nil
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name == name then
+                selectedTargetPlayer = p
+                break
+            end
+        end
+    end,
+})
+
+PlayerTab:Button({
+    Title = "刷新玩家列表",
+    Desc = "重新检测本服务器当前玩家",
+    Callback = function()
+        local names = getPlayerNames()
+        pcall(function() playerDropdown:Refresh(names) end)
+        WindUI:Notify({ Title = "玩家选项", Content = "已刷新玩家列表，共 " .. #names .. " 名玩家", Duration = 3, Icon = "refresh-cw" })
+    end,
+})
+
+PlayerTab:Slider({
+    Title = "传送距离",
+    Desc = "调整目标玩家传送过来时与你的距离（格）",
+    Step = 1,
+    Value = { Min = 1, Max = 50, Default = 5 },
+    Callback = function(value)
+        teleportDistance = value
+    end,
+})
+
+local function teleportTargetOnce()
+    if not selectedTargetPlayer then return false end
+    if selectedTargetPlayer == LocalPlayer then return false end
+
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false end
+
+    local targetChar = selectedTargetPlayer.Character
+    local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return false end
+
+    pcall(function() targetRoot:SetNetworkOwner(LocalPlayer) end)
+
+    local myLook = myRoot.CFrame.LookVector
+    local targetPos = myRoot.Position + myLook * teleportDistance + Vector3.new(0, 3, 0)
+
+    local rotationOnly = targetRoot.CFrame - targetRoot.Position
+    pcall(function()
+        targetRoot.CFrame = CFrame.new(targetPos) * rotationOnly
+    end)
+    return true
+end
+
+PlayerTab:Button({
+    Title = "传送过来（单次）",
+    Desc = "将选中玩家瞬间传送到你附近",
+    Callback = function()
+        if teleportTargetOnce() then
+            WindUI:Notify({ Title = "玩家选项", Content = "已传送 " .. selectedTargetPlayer.Name, Duration = 3, Icon = "arrow-down" })
+        else
+            WindUI:Notify({ Title = "玩家选项", Content = "传送失败：请先选择玩家，或角色尚未加载", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+PlayerTab:Toggle({
+    Title = "循环传送",
+    Desc = "开启后持续将选中玩家传送到你附近",
+    Value = false,
+    Callback = function(state)
+        loopTeleportEnabled = state
+        if loopTeleportConn then
+            loopTeleportConn:Disconnect()
+            loopTeleportConn = nil
+        end
+        if not state then return end
+        loopTeleportConn = RunService.Heartbeat:Connect(function()
+            if not loopTeleportEnabled then return end
+            if selectedTargetPlayer then
+                pcall(teleportTargetOnce)
+            end
+        end)
+    end,
+})
+
+PlayerTab:Toggle({
+    Title = "旋转玩家",
+    Desc = "让选中玩家持续快速旋转",
+    Value = false,
+    Callback = function(state)
+        rotateEnabled = state
+        if rotateConn then
+            rotateConn:Disconnect()
+            rotateConn = nil
+        end
+        if not state then
+            if selectedTargetPlayer then
+                local char = selectedTargetPlayer.Character
+                if char then
+                    for _, part in ipairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            pcall(function() part.AssemblyAngularVelocity = Vector3.zero end)
+                        end
+                    end
+                end
+            end
+            return
+        end
+        rotateConn = RunService.Heartbeat:Connect(function()
+            if not rotateEnabled or not selectedTargetPlayer then return end
+            local char = selectedTargetPlayer.Character
+            if not char then return end
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    pcall(function()
+                        part.AssemblyAngularVelocity = Vector3.new(
+                            math.random(-50, 50),
+                            500,
+                            math.random(-50, 50)
+                        )
+                    end)
+                end
+            end
+        end)
+    end,
+})
+
+Players.PlayerAdded:Connect(function()
+    task.wait(0.3)
+    pcall(function() playerDropdown:Refresh(getPlayerNames()) end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if player == selectedTargetPlayer then
+        selectedTargetPlayer = nil
+    end
+    task.wait(0.3)
+    pcall(function() playerDropdown:Refresh(getPlayerNames()) end)
+end)
+
+local UtilityTab = Window:Tab({ Title = "通用功能", Icon = "sliders-horizontal" })
+UtilityTab:Section({ Title = "控制开关" })
+
+local touchFlingEnabled = false
+local touchFlingConn = nil
+local flingBusy = false
+
+local function feFling(targetPlayer, duration)
+    if flingBusy then return end
+    if not targetPlayer or targetPlayer == LocalPlayer then return end
+    local targetChar = targetPlayer.Character
+    local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
+
+    local myChar = LocalPlayer.Character
+    local hum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local root = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not (myChar and hum and root) then return end
+
+    flingBusy = true
+    local savedCFrame = root.CFrame
+    local savedWS, savedJP = hum.WalkSpeed, hum.JumpPower
+
+    pcall(function() hum.Sit = true end)
+    hum.WalkSpeed = 0
+    hum.JumpPower = 0
+
+    local massBackup = {}
+    for _, part in ipairs(myChar:GetDescendants()) do
+        if part:IsA("BasePart") then
+            massBackup[part] = part.Massless
+            part.Massless = true
+            part.CanCollide = false
+        end
+    end
+
+    local BIG = 9e7
+    local t0 = tick()
+    while tick() - t0 < (duration or 0.35) do
+        if not targetRoot.Parent or not root.Parent then break end
+        for _, part in ipairs(myChar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.AssemblyLinearVelocity = Vector3.new(
+                    math.random(-BIG, BIG), BIG, math.random(-BIG, BIG)
+                )
+                part.AssemblyAngularVelocity = Vector3.new(
+                    math.random(-BIG, BIG), math.random(-BIG, BIG), math.random(-BIG, BIG)
+                )
+            end
+        end
+        pcall(function()
+            root.CFrame = targetRoot.CFrame + Vector3.new(0, 0.5, 0)
+        end)
+        RunService.Heartbeat:Wait()
+    end
+
+    for part, was in pairs(massBackup) do
+        if part.Parent then
+            part.Massless = was or false
+            part.CanCollide = true
+        end
+    end
+
+    pcall(function()
+        for _, part in ipairs(myChar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        hum.Sit = false
+        hum.WalkSpeed = savedWS
+        hum.JumpPower = savedJP
+        root.CFrame = savedCFrame
+    end)
+
+    flingBusy = false
+end
+
+UtilityTab:Toggle({
+    Title = "触摸甩飞（静默甩飞）",
+    Desc = "开启后，附近其他玩家会被静默甩飞，自身绝对不受反作用力影响。",
+    Value = false,
+    Callback = function(state)
+        touchFlingEnabled = state
+        if touchFlingConn then touchFlingConn:Disconnect() touchFlingConn = nil end
+        if not touchFlingEnabled then return end
+
+        touchFlingConn = RunService.Heartbeat:Connect(function()
+            if not touchFlingEnabled or flingBusy then return end
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            if not myRoot then return end
+
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player == LocalPlayer then continue end
+                local char = player.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if not root then continue end
+                if (root.Position - myRoot.Position).Magnitude <= 15 then
+                    task.spawn(feFling, player, 0.35)
+                    break
+                end
+            end
+        end)
+    end,
+})
+
+UtilityTab:Button({
+    Title = "隐身（外部导入）",
+    Desc = "加载外部隐身脚本",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/Mwxbt9pp"))()
+        end)
+        WindUI:Notify({ Title = "PLH脚本", Content = "隐身脚本已加载", Duration = 4, Icon = "eye-off" })
+    end,
+})
+
+local noclipConn = nil
+UtilityTab:Toggle({
+    Title = "穿墙",
+    Desc = "开启后角色无视碰撞，可以穿过墙壁；重生后自动保持。",
+    Value = false,
+    Callback = function(state)
+        noclipEnabled = state
+        if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+
+        local function apply(flag)
+            local char = LocalPlayer.Character
+            if not char then return end
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then part.CanCollide = not flag end
+            end
+        end
+
+        if not noclipEnabled then apply(false) return end
+        apply(true)
+        noclipConn = RunService.Stepped:Connect(function()
+            if not noclipEnabled then
+                if noclipConn then noclipConn:Disconnect() end
+                noclipConn = nil
+                return
+            end
+            apply(true)
+        end)
+    end,
+})
+
+local infiniteJumpEnabled = false
+local infiniteJumpConn = nil
+
+UtilityTab:Toggle({
+    Title = "无限跳",
+    Desc = "开启后可在空中无限跳跃；关闭后恢复默认跳跃",
+    Value = false,
+    Callback = function(state)
+        infiniteJumpEnabled = state
+        if infiniteJumpConn then
+            infiniteJumpConn:Disconnect()
+            infiniteJumpConn = nil
+        end
+        if not state then
+            WindUI:Notify({ Title = "无限跳", Content = "无限跳已关闭，已恢复默认跳跃", Duration = 3, Icon = "arrow-up" })
+            return
+        end
+        infiniteJumpConn = UserInputService.JumpRequest:Connect(function()
+            if not infiniteJumpEnabled then return end
+            local hum = getHumanoid()
+            if hum then
+                pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+            end
+        end)
+        WindUI:Notify({ Title = "无限跳", Content = "无限跳已开启", Duration = 3, Icon = "arrow-up" })
+    end,
+})
+
+UtilityTab:Section({ Title = "跳跃高度" })
+
+local jumpHeightSlider = UtilityTab:Slider({
+    Title = "跳跃高度",
+    Desc = "拖动滑条设置跳跃最高高度（默认 7.2）",
+    Step = 0.1,
+    Value = { Min = 0, Max = 500, Default = DEFAULT_JUMP_HEIGHT },
+    Callback = function(v) currentJumpHeight = v end,
+})
+
+UtilityTab:Button({
+    Title = "应用跳跃高度",
+    Desc = "把角色跳跃高度设置为滑条当前值",
+    Callback = function()
+        if applyJumpHeight(currentJumpHeight) then
+            WindUI:Notify({ Title = "跳跃高度", Content = "已设置跳跃高度为 " .. currentJumpHeight, Duration = 3, Icon = "arrow-up-circle" })
+        else
+            WindUI:Notify({ Title = "跳跃高度", Content = "角色未加载", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+UtilityTab:Button({
+    Title = "恢复默认跳跃高度",
+    Desc = "恢复成角色原本的跳跃高度",
+    Callback = function()
+        if restoreDefaultJumpHeight() then
+            pcall(function() jumpHeightSlider:Set(DEFAULT_JUMP_HEIGHT) end)
+            WindUI:Notify({ Title = "跳跃高度", Content = "已恢复默认跳跃高度", Duration = 3, Icon = "rotate-ccw" })
+        else
+            WindUI:Notify({ Title = "跳跃高度", Content = "角色未加载", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+UtilityTab:Section({ Title = "自定义血量" })
+
+local healthSlider = UtilityTab:Slider({
+    Title = "自定义血量",
+    Desc = "拖动滑条设置目标血量值（1 - 10000）",
+    Step = 1,
+    Value = { Min = 1, Max = 10000, Default = 100 },
+    Callback = function(v) customHealth = v end,
+})
+
+UtilityTab:Button({
+    Title = "应用血量",
+    Desc = "将角色血量设置为滑条当前值",
+    Callback = function()
+        if applyCustomHealth(customHealth) then
+            WindUI:Notify({ Title = "血量", Content = "已设置血量为 " .. customHealth, Duration = 3, Icon = "heart" })
+        else
+            WindUI:Notify({ Title = "血量", Content = "角色未加载", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+UtilityTab:Button({
+    Title = "恢复默认血量",
+    Desc = "恢复成角色原本的最大血量",
+    Callback = function()
+        if restoreDefaultHealth() then
+            customHealth = originalMaxHealth or 100
+            pcall(function() healthSlider:Set(customHealth) end)
+            WindUI:Notify({ Title = "血量", Content = "已恢复默认血量", Duration = 3, Icon = "rotate-ccw" })
+        else
+            WindUI:Notify({ Title = "血量", Content = "角色未加载", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+UtilityTab:Toggle({
+    Title = "血量锁定",
+    Desc = "开启后血量持续锁定为滑条设定值",
+    Value = false,
+    Callback = function(state)
+        healthLockEnabled = state
+        if healthLockConn then healthLockConn:Disconnect() healthLockConn = nil end
+        if not state then return end
+        healthLockConn = RunService.Stepped:Connect(function()
+            if not healthLockEnabled then return end
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                if customHealth > (originalMaxHealth or hum.MaxHealth) then
+                    hum.MaxHealth = customHealth
+                end
+                if hum.Health < customHealth then
+                    pcall(function() hum.Health = customHealth end)
+                end
+            end
+        end)
+    end,
+})
+
+local ScriptsTab = Window:Tab({ Title = "别的脚本", Icon = "file-code" })
+ScriptsTab:Section({ Title = "第三方脚本加载" })
+
+ScriptsTab:Paragraph({
+    Title = "温馨提示",
+    Desc = "以下脚本均为第三方脚本，点击对应按钮即可加载。加载前请确认当前游戏环境适合，以免发生异常。",
+})
+
+ScriptsTab:Button({
+    Title = "加载黑白脚本",
+    Desc = "点击下载并加载黑白脚本加载器",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet('https://raw.githubusercontent.com/tfcygvunbind/Apple/main/黑白脚本加载器'))()
+        end)
+        WindUI:Notify({ Title = "别的脚本", Content = "黑白脚本已加载", Duration = 4, Icon = "download" })
+    end,
+})
+
+ScriptsTab:Button({
+    Title = "加载皮脚本",
+    Desc = "点击加载停皮脚本（QQ群 1002100032）",
+    Callback = function()
+        pcall(function()
+            getgenv().XiaoPi = "皮脚本QQ群1002100032"
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/xiaopi77/xiaopi77/main/QQ1002100032-Roblox-Pi-script.lua"))()
+        end)
+        WindUI:Notify({ Title = "别的脚本", Content = "皮脚本已加载", Duration = 4, Icon = "download" })
+    end,
+})
+
+ScriptsTab:Button({
+    Title = "加载rb脚本中心",
+    Desc = "点击加载 rb 脚本中心",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/chesslovers69/Super-ring-parts-v6/refs/heads/main/Bylukaslol"))()
+        end)
+        WindUI:Notify({ Title = "别的脚本", Content = "rb脚本中心已加载", Duration = 4, Icon = "download" })
+    end,
+})
+
+local PerformanceTab = Window:Tab({ Title = "性能设置", Icon = "activity" })
+PerformanceTab:Section({ Title = "帧率上限设置" })
+
+PerformanceTab:Paragraph({
+    Title = "使用方法",
+    Desc = "1. 拖动滑条或输入数字设置帧率（范围 1 - 9999）。\n2. 滑条拉到 60 及以下会自动锁定，无需点击确认。\n3. 60 以上或输入框输入后，需点击“确认应用帧率上限”。\n4. 锁帧会持续轮询生效，防止被游戏重置。\n5. 点击“解除帧率锁定”即可恢复正常。",
+})
+
+local fpsCapValue = 60
+local fpsCapApplied = 60
+local fpsLockEnabled = false
+local fpsLockThread = nil
+local fpsLockTarget = nil
+local syncingFps = false
+local fpsSlider, fpsInput
+
+local function normalizeFps(n)
+    n = tonumber(n)
+    if not n then return nil end
+    n = math.floor(n + 0.5)
+    if n < 1 then n = 1 end
+    if n > 9999 then n = 9999 end
+    return n
+end
+
+local function doSetFps(n)
+    n = normalizeFps(n)
+    if not n then return false end
+    local applied = false
+    pcall(function()
+        if type(setfpscap) == "function" then
+            setfpscap(n)
+            applied = true
+        end
+    end)
+    if not applied then
+        pcall(function()
+            local env = getgenv and getgenv() or _G
+            if env and type(env.setfpscap) == "function" then
+                env.setfpscap(n)
+                applied = true
+            end
+        end)
+    end
+    if not applied then
+        pcall(function()
+            local settings = UserSettings():GetService("UserGameSettings")
+            if settings and settings.SetFpsCap then
+                settings:SetFpsCap(n)
+                applied = true
+            end
+        end)
+    end
+    if applied then
+        fpsCapApplied = n
+    end
+    return applied
+end
+
+local function getCurrentFpsCap()
+    local n = nil
+    pcall(function()
+        if type(getfpscap) == "function" then
+            n = getfpscap()
+        end
+    end)
+    return n
+end
+
+local function stopFpsLock()
+    fpsLockEnabled = false
+    fpsLockTarget = nil
+    if fpsLockThread then
+        pcall(function() task.cancel(fpsLockThread) end)
+        fpsLockThread = nil
+    end
+end
+
+local function startFpsLock(n)
+    n = normalizeFps(n)
+    if not n then return false end
+    stopFpsLock()
+    fpsCapValue = n
+    local okApplied = doSetFps(n)
+    fpsLockEnabled = true
+    fpsLockTarget = n
+    fpsLockThread = task.spawn(function()
+        while fpsLockEnabled and fpsLockTarget == n do
+            doSetFps(n)
+            task.wait(0.3)
+        end
+    end)
+    return okApplied
+end
+
+local function syncFpsUI(n)
+    syncingFps = true
+    pcall(function() if fpsSlider then fpsSlider:Set(n) end end)
+    pcall(function() if fpsInput and fpsInput.Set then fpsInput:Set(tostring(n)) end end)
+    syncingFps = false
+end
+
+fpsSlider = PerformanceTab:Slider({
+    Title = "帧率上限（滑动）",
+    Desc = "滑动设置，60 及以下会自动锁定，60 以上需点确认",
+    Step = 1,
+    Value = { Min = 1, Max = 9999, Default = 60 },
+    Callback = function(v)
+        if syncingFps then return end
+        v = normalizeFps(v)
+        if not v then return end
+        fpsCapValue = v
+        if v <= 60 then
+            local okApplied = startFpsLock(v)
+            pcall(function() if fpsInput and fpsInput.Set then fpsInput:Set(tostring(v)) end end)
+            if okApplied then
+                WindUI:Notify({ Title = "帧率", Content = "已自动锁定 " .. v .. " FPS", Duration = 2, Icon = "activity" })
+            else
+                WindUI:Notify({ Title = "帧率", Content = "执行器不支持 setfpscap，无法锁定", Duration = 3, Icon = "alert-circle" })
+            end
+        end
+    end,
+})
+
+fpsInput = PerformanceTab:Input({
+    Title = "帧率上限（输入）",
+    Desc = "输入 1 - 9999 后点击确认按钮",
+    Value = "60",
+    Placeholder = "输入 1 - 9999",
+    Callback = function(text)
+        if syncingFps then return end
+        local n = normalizeFps(text)
+        if not n then return end
+        fpsCapValue = n
+    end,
+})
+
+PerformanceTab:Button({
+    Title = "确认应用帧率上限",
+    Desc = "把当前值锁定为目标帧率",
+    Callback = function()
+        local n = normalizeFps(fpsCapValue)
+        if not n then
+            WindUI:Notify({ Title = "帧率", Content = "请输入有效数字", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        syncFpsUI(n)
+        local okApplied = startFpsLock(n)
+        if okApplied then
+            WindUI:Notify({ Title = "帧率", Content = "已锁定 " .. n .. " FPS", Duration = 3, Icon = "activity" })
+        else
+            WindUI:Notify({ Title = "帧率", Content = "执行器不支持 setfpscap，无法锁定", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+PerformanceTab:Button({
+    Title = "解除帧率锁定",
+    Desc = "停止持续锁帧",
+    Callback = function()
+        stopFpsLock()
+        WindUI:Notify({ Title = "帧率", Content = "已解除帧率锁定", Duration = 2, Icon = "unlock" })
+    end,
+})
+
+PerformanceTab:Button({
+    Title = "调试信息",
+    Desc = "查看当前帧率锁定状态",
+    Callback = function()
+        local cur = getCurrentFpsCap()
+        local lockState = fpsLockEnabled and ("锁定中 -> " .. tostring(fpsLockTarget) .. " FPS") or "未锁定"
+        local content = string.format(
+            "滑条/输入值：%d FPS\n已应用值：%d FPS\n系统读取值：%s\n锁定状态：%s",
+            fpsCapValue, fpsCapApplied, cur and tostring(cur) or "不可读取", lockState
+        )
+        WindUI:Notify({ Title = "帧率调试", Content = content, Duration = 6, Icon = "info" })
+    end,
+})
+
+local EffectTab = Window:Tab({ Title = "特效功能", Icon = "sparkles" })
+EffectTab:Section({ Title = "角色特效" })
+
+local function clearFire()
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, obj in ipairs(char:GetDescendants()) do
+        if obj.Name == "PLH_Fire" then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+end
+
+local function clearIce()
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, obj in ipairs(char:GetDescendants()) do
+        if obj.Name == "PLH_Ice" then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+end
+
+local function applyFire()
+    clearFire()
+    clearIce()
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local fireFx = Instance.new("Fire")
+            fireFx.Name = "PLH_Fire"
+            fireFx.Heat = 5
+            fireFx.Size = 8
+            fireFx.Color = Color3.fromRGB(255, 120, 20)
+            fireFx.SecondaryColor = Color3.fromRGB(255, 60, 0)
+            fireFx.Parent = part
+        end
+    end
+end
+
+local function applyIce()
+    clearFire()
+    clearIce()
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local emit = Instance.new("ParticleEmitter")
+            emit.Name = "PLH_Ice"
+            emit.Texture = "rbxassetid://243660364"
+            emit.Rate = 25
+            emit.Lifetime = NumberRange.new(0.5, 1)
+            emit.Speed = NumberRange.new(1, 3)
+            emit.SpreadAngle = Vector2.new(180, 180)
+            emit.Size = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.5),
+                NumberSequenceKeypoint.new(1, 0)
+            })
+            emit.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(200, 240, 255)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(100, 180, 255))
+            })
+            emit.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.3),
+                NumberSequenceKeypoint.new(1, 1)
+            })
+            emit.Parent = part
+        end
+    end
+end
+
+EffectTab:Button({
+    Title = "开启火焰特效",
+    Desc = "身体着火，不扣血",
+    Callback = function()
+        applyFire()
+        WindUI:Notify({ Title = "特效", Content = "火焰特效已开启", Duration = 3, Icon = "flame" })
+    end,
+})
+
+EffectTab:Button({
+    Title = "开启冰霜特效",
+    Desc = "身体出现冰霜粒子",
+    Callback = function()
+        applyIce()
+        WindUI:Notify({ Title = "特效", Content = "冰霜特效已开启", Duration = 3, Icon = "snowflake" })
+    end,
+})
+
+EffectTab:Button({
+    Title = "关闭特效",
+    Desc = "关闭所有角色特效",
+    Callback = function()
+        clearFire()
+        clearIce()
+        WindUI:Notify({ Title = "特效", Content = "所有特效已关闭", Duration = 3, Icon = "x" })
+    end,
+})
+
+local SkyTab = Window:Tab({ Title = "天空修改", Icon = "cloud" })
+SkyTab:Section({ Title = "天空纹理" })
+
+local skyPresets = {
+    ["漫画风格"] = {
+        Bk = "rbxassetid://271042516",
+        Dn = "rbxassetid://271042511",
+        Ft = "rbxassetid://271042606",
+        Lf = "rbxassetid://271042549",
+        Rt = "rbxassetid://271042652",
+        Up = "rbxassetid://271042579",
+    },
+    ["黑暗风格"] = {
+        Bk = "rbxassetid://159454299",
+        Dn = "rbxassetid://159454296",
+        Ft = "rbxassetid://159454293",
+        Lf = "rbxassetid://159454290",
+        Rt = "rbxassetid://159454287",
+        Up = "rbxassetid://159454284",
+    },
+}
+
+local function applySky(preset)
+    local sky = Lighting:FindFirstChildOfClass("Sky")
+    if not sky then
+        sky = Instance.new("Sky")
+        sky.Parent = Lighting
+    end
+    pcall(function()
+        sky.SkyboxBk = preset.Bk
+        sky.SkyboxDn = preset.Dn
+        sky.SkyboxFt = preset.Ft
+        sky.SkyboxLf = preset.Lf
+        sky.SkyboxRt = preset.Rt
+        sky.SkyboxUp = preset.Up
+    end)
+end
+
+SkyTab:Button({
+    Title = "漫画风格天空",
+    Desc = "明亮的漫画风格天空",
+    Callback = function()
+        applySky(skyPresets["漫画风格"])
+        WindUI:Notify({ Title = "天空", Content = "已切换到漫画风格天空", Duration = 3, Icon = "sun" })
+    end,
+})
+
+SkyTab:Button({
+    Title = "黑暗风格天空",
+    Desc = "阴暗的黑暗风格天空",
+    Callback = function()
+        applySky(skyPresets["黑暗风格"])
+        WindUI:Notify({ Title = "天空", Content = "已切换到黑暗风格天空", Duration = 3, Icon = "moon" })
+    end,
+})
+
+SkyTab:Section({ Title = "天空颜色" })
+
+local skyR, skyG, skyB = 128, 187, 219
+
+SkyTab:Slider({
+    Title = "R（红）",
+    Step = 1,
+    Value = { Min = 0, Max = 255, Default = 128 },
+    Callback = function(v) skyR = v end,
+})
+
+SkyTab:Slider({
+    Title = "G（绿）",
+    Step = 1,
+    Value = { Min = 0, Max = 255, Default = 187 },
+    Callback = function(v) skyG = v end,
+})
+
+SkyTab:Slider({
+    Title = "B（蓝）",
+    Step = 1,
+    Value = { Min = 0, Max = 255, Default = 219 },
+    Callback = function(v) skyB = v end,
+})
+
+SkyTab:Button({
+    Title = "修改天空颜色",
+    Desc = "把当前 RGB 应用到天空环境光",
+    Callback = function()
+        local color = Color3.fromRGB(skyR, skyG, skyB)
+        pcall(function()
+            Lighting.Ambient = color
+            Lighting.OutdoorAmbient = color
+            Lighting.ColorShift_Top = color
+            Lighting.ColorShift_Bottom = color
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+        end)
+        WindUI:Notify({ Title = "天空", Content = string.format("天空颜色已修改为 (%d, %d, %d)", skyR, skyG, skyB), Duration = 3, Icon = "palette" })
+    end,
+})
+
+local NPCTab = Window:Tab({ Title = "NPC操控", Icon = "crosshair" })
+
+local selectedNPC = nil
+local npcStopFlag = 0
+local velX, velY, velZ = 0, 100, 0
+local velRelative = false
+local cfX, cfY, cfZ = 0, 100, 0
+local cfRelative = false
+local dragSensitivity = 0.2
+local tripDuration = 3
+local spinSpeed = 4
+local danceSpeed = 6
+local specialSpeed = 15
+
+local function getSelectedNPC()
+    if selectedNPC and selectedNPC.Parent then
+        return selectedNPC
+    end
+    return nil
+end
+
+local function findClosestNPC()
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    local dist = math.huge
+    local closest = nil
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("Model") and v ~= myChar then
+            local phrp = v:FindFirstChild("HumanoidRootPart")
+            local phum = v:FindFirstChildOfClass("Humanoid")
+            if phrp and phum then
+                local d = (myRoot.Position - phrp.Position).Magnitude
+                if d < dist and phum.Health > 0 and phrp.ReceiveAge == 0 then
+                    dist = d
+                    closest = v
+                end
+            end
+        end
+    end
+    return closest
+end
+
+NPCTab:Section({ Title = "目标选择" })
+
+NPCTab:Button({
+    Title = "选择最近的NPC",
+    Desc = "自动扫描并选中离你最近的NPC作为操控目标",
+    Callback = function()
+        local npc = findClosestNPC()
+        if npc then
+            selectedNPC = npc
+            WindUI:Notify({ Title = "NPC操控", Content = "已选中：" .. npc.Name, Duration = 3, Icon = "target" })
+        else
+            WindUI:Notify({ Title = "NPC操控", Content = "附近没有找到可操控的NPC", Duration = 3, Icon = "alert-circle" })
+        end
+    end,
+})
+
+NPCTab:Button({
+    Title = "停止当前NPC操作",
+    Desc = "中断所有正在执行的NPC操控循环",
+    Callback = function()
+        npcStopFlag += 1
+        WindUI:Notify({ Title = "NPC操控", Content = "已停止当前操作", Duration = 2, Icon = "square" })
+    end,
+})
+
+NPCTab:Section({ Title = "基础操作" })
+
+NPCTab:Button({
+    Title = "击杀选中NPC",
+    Desc = "让选中NPC立刻死亡",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phum = t:FindFirstChildOfClass("Humanoid")
+        if phum then
+            pcall(function()
+                phum.Health = -1
+                phum:TakeDamage(9e9)
+                phum:ChangeState(Enum.HumanoidStateType.Dead)
+            end)
+            WindUI:Notify({ Title = "NPC操控", Content = "已击杀：" .. t.Name, Duration = 3, Icon = "skull" })
+        end
+    end,
+})
+
+NPCTab:Button({
+    Title = "删除选中NPC",
+    Desc = "把NPC传送到地图底部的销毁高度下",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if phrp and myRoot then
+            local height = workspace.FallenPartsDestroyHeight
+            local vec = Vector3.new(myRoot.Position.X, height, myRoot.Position.Z)
+            local dis = (myRoot.Position - vec).Magnitude
+            pcall(function() phrp.CFrame = phrp.CFrame * CFrame.new(0, (-dis) + 3, 0) end)
+            WindUI:Notify({ Title = "NPC操控", Content = "已尝试删除：" .. t.Name, Duration = 3, Icon = "trash-2" })
+        end
+    end,
+})
+
+NPCTab:Section({ Title = "速度设置（Velocity）" })
+
+NPCTab:Slider({
+    Title = "Velocity X",
+    Step = 1,
+    Value = { Min = -500, Max = 500, Default = 0 },
+    Callback = function(v) velX = v end,
+})
+
+NPCTab:Slider({
+    Title = "Velocity Y",
+    Step = 1,
+    Value = { Min = -500, Max = 500, Default = 100 },
+    Callback = function(v) velY = v end,
+})
+
+NPCTab:Slider({
+    Title = "Velocity Z",
+    Step = 1,
+    Value = { Min = -500, Max = 500, Default = 0 },
+    Callback = function(v) velZ = v end,
+})
+
+NPCTab:Toggle({
+    Title = "Velocity 相对模式",
+    Desc = "开启后基于NPC当前速度叠加，关闭则直接覆盖",
+    Value = false,
+    Callback = function(s) velRelative = s end,
+})
+
+NPCTab:Button({
+    Title = "应用 Velocity",
+    Desc = "将设置的速度应用到选中NPC身上",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        if not phrp then return end
+        if velRelative then
+            phrp.Velocity = phrp.Velocity + Vector3.new(velX, velY, velZ)
+        else
+            phrp.Velocity = Vector3.new(velX, velY, velZ)
+        end
+        WindUI:Notify({ Title = "NPC操控", Content = "Velocity 已应用", Duration = 2, Icon = "zap" })
+    end,
+})
+
+NPCTab:Section({ Title = "拖拽（Drag）" })
+
+NPCTab:Slider({
+    Title = "拖拽灵敏度",
+    Desc = "数值越小跟踪镜头越慢越自然",
+    Step = 0.05,
+    Value = { Min = 0.05, Max = 1, Default = 0.2 },
+    Callback = function(v) dragSensitivity = v end,
+})
+
+NPCTab:Button({
+    Title = "拖拽NPC到镜头前",
+    Desc = "让NPC持续悬浮在你镜头前方",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        local phum = t:FindFirstChildOfClass("Humanoid")
+        if not phrp or not phum then return end
+        local cam = workspace.CurrentCamera
+        npcStopFlag += 1
+        local id = npcStopFlag
+        task.spawn(function()
+            while t and t.Parent and id == npcStopFlag and phrp.Parent and phum.Parent and phum.Health > 0 and selectedNPC == t do
+                phrp.CFrame = phrp.CFrame:Lerp(cam.CFrame * CFrame.new(0, 0, -15), dragSensitivity)
+                phrp.Velocity = Vector3.new(0, 3, 0)
+                RunService.Heartbeat:Wait()
+            end
+        end)
+    end,
+})
+
+NPCTab:Section({ Title = "绊倒（Trip）" })
+
+NPCTab:Slider({
+    Title = "绊倒持续时间",
+    Step = 0.5,
+    Value = { Min = 0.5, Max = 10, Default = 3 },
+    Callback = function(v) tripDuration = v end,
+})
+
+NPCTab:Button({
+    Title = "绊倒NPC",
+    Desc = "让选中NPC进入 PlatformStand 状态无法行动",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phum = t:FindFirstChildOfClass("Humanoid")
+        if not phum then return end
+        npcStopFlag += 1
+        local id = npcStopFlag
+        local start = tick()
+        task.spawn(function()
+            while t and t.Parent and id == npcStopFlag and phum.Parent and phum.Health > 0 and tick() - start < tripDuration do
+                phum.PlatformStand = true
+                RunService.Heartbeat:Wait()
+            end
+            if phum then phum.PlatformStand = false end
+        end)
+    end,
+})
+
+NPCTab:Section({ Title = "操控（Control）" })
+
+NPCTab:Button({
+    Title = "操控NPC移动",
+    Desc = "把NPC变成你的可操控角色，用方向键控制",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local myChar = LocalPlayer.Character
+        local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        local phum = t:FindFirstChildOfClass("Humanoid")
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        if not (myHum and myRoot and phum and phrp) then return end
+        local cam = workspace.CurrentCamera
+        npcStopFlag += 1
+        local id = npcStopFlag
+        local oldAnchor = myRoot.Anchored
+        local oldCamSubject = cam.CameraSubject
+        myRoot.Anchored = true
+        cam.CameraSubject = phum
+        task.spawn(function()
+            while t and t.Parent and id == npcStopFlag and phrp.Parent and phum.Parent and phum.Health > 0 do
+                if phum.WalkSpeed <= 0 then phum.WalkSpeed = 16 end
+                phum:MoveTo(phrp.Position + myHum.MoveDirection * 3)
+                phum.Jump = myHum.Jump
+                RunService.Heartbeat:Wait()
+            end
+            pcall(function()
+                myRoot.Anchored = oldAnchor
+                cam.CameraSubject = oldCamSubject
+            end)
+        end)
+    end,
+})
+
+NPCTab:Section({ Title = "旋转（Spin）" })
+
+NPCTab:Slider({
+    Title = "旋转速度",
+    Step = 1,
+    Value = { Min = 1, Max = 90, Default = 4 },
+    Callback = function(v) spinSpeed = v end,
+})
+
+NPCTab:Button({
+    Title = "旋转NPC",
+    Desc = "让选中NPC持续高速绕Y轴旋转",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        if not phrp then return end
+        npcStopFlag += 1
+        local id = npcStopFlag
+        task.spawn(function()
+            while t and t.Parent and id == npcStopFlag and phrp.Parent do
+                phrp.CFrame = phrp.CFrame * CFrame.Angles(0, math.rad(spinSpeed), 0)
+                RunService.Heartbeat:Wait()
+            end
+        end)
+    end,
+})
+
+NPCTab:Section({ Title = "位置设置（CFrame）" })
+
+NPCTab:Slider({
+    Title = "位置 X",
+    Step = 1,
+    Value = { Min = -1000, Max = 1000, Default = 0 },
+    Callback = function(v) cfX = v end,
+})
+
+NPCTab:Slider({
+    Title = "位置 Y",
+    Step = 1,
+    Value = { Min = -1000, Max = 1000, Default = 100 },
+    Callback = function(v) cfY = v end,
+})
+
+NPCTab:Slider({
+    Title = "位置 Z",
+    Step = 1,
+    Value = { Min = -1000, Max = 1000, Default = 0 },
+    Callback = function(v) cfZ = v end,
+})
+
+NPCTab:Toggle({
+    Title = "CFrame 相对模式",
+    Desc = "开启后基于NPC当前位置叠加，关闭则直接传送",
+    Value = false,
+    Callback = function(s) cfRelative = s end,
+})
+
+NPCTab:Button({
+    Title = "应用 CFrame",
+    Desc = "把设置的坐标应用到选中NPC",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        if not phrp then return end
+        if cfRelative then
+            phrp.CFrame = phrp.CFrame * CFrame.new(cfX, cfY, cfZ)
+        else
+            phrp.CFrame = CFrame.new(cfX, cfY, cfZ)
+        end
+        WindUI:Notify({ Title = "NPC操控", Content = "位置已应用", Duration = 2, Icon = "move" })
+    end,
+})
+
+NPCTab:Section({ Title = "趣味动画" })
+
+NPCTab:Slider({
+    Title = "舞蹈速度",
+    Step = 1,
+    Value = { Min = 1, Max = 20, Default = 6 },
+    Callback = function(v) danceSpeed = v end,
+})
+
+NPCTab:Button({
+    Title = "跳舞动画（Lil Dance）",
+    Desc = "让NPC原地摇摆跳舞",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        local phum = t:FindFirstChildOfClass("Humanoid")
+        if not phrp or not phum then return end
+        local oldpos = phrp.CFrame
+        npcStopFlag += 1
+        local id = npcStopFlag
+        task.spawn(function()
+            while t and t.Parent and id == npcStopFlag and phrp.Parent and phum.Parent and phum.Health > 0 do
+                phrp.CFrame = oldpos * CFrame.Angles(math.cos(tick() * 2) / 2, 0, math.sin(tick() * danceSpeed) / 3)
+                phrp.Velocity = Vector3.new(0, 3, 0)
+                phum.PlatformStand = true
+                RunService.Heartbeat:Wait()
+            end
+            if phum then phum.PlatformStand = false end
+        end)
+    end,
+})
+
+NPCTab:Slider({
+    Title = "特殊动作速度",
+    Step = 1,
+    Value = { Min = 1, Max = 30, Default = 15 },
+    Callback = function(v) specialSpeed = v end,
+})
+
+NPCTab:Button({
+    Title = "特殊动作",
+    Desc = "让NPC跟随你身前做特殊动作",
+    Callback = function()
+        local t = getSelectedNPC()
+        if not t then
+            WindUI:Notify({ Title = "NPC操控", Content = "请先选择目标", Duration = 2, Icon = "alert-circle" })
+            return
+        end
+        local phrp = t:FindFirstChild("HumanoidRootPart")
+        local phum = t:FindFirstChildOfClass("Humanoid")
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not (phrp and phum and myRoot) then return end
+        npcStopFlag += 1
+        local id = npcStopFlag
+        task.spawn(function()
+            while t and t.Parent and id == npcStopFlag and phrp.Parent and phum.Parent and phum.Health > 0 do
+                phrp.CFrame = myRoot.CFrame * CFrame.new(0, -1.2, -(1.5 + math.abs(math.sin(tick() * specialSpeed)))) * CFrame.Angles(math.rad(-90), 0, 0)
+                phrp.Velocity = Vector3.new(0, 3, 0)
+                phum.PlatformStand = true
+                RunService.Heartbeat:Wait()
+            end
+            if phum then phum.PlatformStand = false end
+        end)
+    end,
+})
+
+local DefenseTab = Window:Tab({ Title = "防御功能", Icon = "shield" })
+DefenseTab:Section({ Title = "防御功能" })
+
+DefenseTab:Paragraph({
+    Title = "🚧 功能未开发",
+    Desc = "防御功能目前还处于预告阶段，尚未开发完成，敬请期待后续版本更新。\n\n计划中的防御功能可能包含：\n· 反甩飞保护\n· 反传送保护\n· 反击杀保护\n· 无敌模式\n· 碰撞体保护\n\n请关注脚本更新，感谢支持！",
+})
+
+local isDarkTheme = true
+local SettingsTab = Window:Tab({ Title = "设置", Icon = "settings" })
+SettingsTab:Section({ Title = "界面设置" })
+
+SettingsTab:Button({
+    Title = "切换 深色 / 浅色 主题",
+    Callback = function()
+        isDarkTheme = not isDarkTheme
+        pcall(function() WindUI:SetTheme(isDarkTheme and "Dark" or "Light") end)
+    end,
+})
+
+SettingsTab:Button({
+    Title = "关闭界面",
+    Callback = function() pcall(function() Window:Close() end) end,
+})
+
+SettingsTab:Section({ Title = "使用提示" })
+SettingsTab:Paragraph({
+    Title = "温馨提示",
+    Desc = "1. 顶部搜索栏：WindUI 内置搜索，可快速定位功能。\n2. 位置管理：保存当前位置并在需要时传送回去。\n3. 内置飞行：点击“开启飞行（自带）”后出现屏幕方向按钮，点 ✕ 关闭飞行。\n4. 自定义血量：滑动设置血量，点“应用血量”生效，点“恢复默认血量”复原。\n5. 无限跳：开启后可空中连续跳跃，关闭恢复默认。\n6. 跳跃高度：可调整角色跳跃最高高度，点“应用跳跃高度”生效。\n7. 帧率设置：滑条拉到 60 及以下会自动锁定；60 以上或输入框输入后需点“确认应用帧率上限”；锁帧会持续生效，点击“解除帧率锁定”可恢复。\n8. 血量锁定：开启后血量持续锁定为滑条设定值。\n9. 别的脚本：可加载黑白脚本、皮脚本、rb脚本中心。\n10. 防御功能目前仅为预告，尚未开发。",
+})
+
+local AboutTab = Window:Tab({ Title = "关于", Icon = "info" })
+AboutTab:Section({ Title = "脚本信息" })
+AboutTab:Paragraph({
+    Title = "PLH 脚本",
+    Desc = "版本：v0.45.6\n功能：速度 / 自带飞行 / 寂寞甩飞 / 位置管理 / 道具扫描获取 / 玩家选择传送 / 静默触摸甩飞 / 隐身 / 穿墙 / 无限跳 / 跳跃高度 / 自定义血量 / 血量锁定 / 帧率上限 / 别的脚本加载 / 角色特效 / 天空修改 / NPC操控 / 防御功能预告 / WindUI 内置搜索",
+})
+AboutTab:Section({ Title = "v0.45.6 更新内容" })
+AboutTab:Paragraph({
+    Title = "本次更新",
+    Desc = "1. 帧率锁定修复：60 及以下滑条自动锁定\n2. 锁帧改为持续轮询，防止被游戏重置\n3. 输入框与滑条值自动同步\n4. 新增“解除帧率锁定”按钮\n5. 多层 setfpscap 兼容，支持更多执行器\n6. 新增跳跃高度设置\n7. 新增“别的脚本”标签页\n8. 新增“防御功能”标签页（预告）\n9. 移除全部代码注释",
+})
+AboutTab:Section({ Title = "NPC操控功能简介" })
+AboutTab:Paragraph({
+    Title = "NPC操控",
+    Desc = "选择最近的NPC作为目标后，可以执行击杀、删除、Velocity、Drag、Trip、Control、Spin、CFrame、Lil Dance、特殊动作等操作，随时可点击“停止”中断。",
+})
+AboutTab:Paragraph({
+    Title = "关于作者",
+    Desc = "作者：Trmokih@Trmokih",
+})
+
+WindUI:Notify({ Title = "PLH 脚本", Content = "加载成功！版本 v0.45.6", Duration = 5, Icon = "check-circle" })
