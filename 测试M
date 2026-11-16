@@ -17,6 +17,7 @@ local RunService = game:GetService("RunService")
 local PhysicsService = game:GetService("PhysicsService")
 local Lighting = game:GetService("Lighting")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
 pcall(function()
@@ -138,7 +139,7 @@ end)
 local Window = WindUI:CreateWindow({
     Title = "PLH脚本",
     Icon = "rbxassetid://6031075931",
-    Author = "PLH | v0.69.7.8",
+    Author = "PLH | v0.69.7.9",
     Folder = "PLH",
     Size = UDim2.fromOffset(580, 460),
     Transparent = true,
@@ -463,12 +464,13 @@ LocationTab:Button({
     end,
 })
 
+-- ========== 道具选项（重写偷取逻辑） ==========
 local ItemTab = Window:Tab({ Title = "道具选项", Icon = "box" })
 ItemTab:Section({ Title = "全游戏道具扫描与获取" })
 
 ItemTab:Paragraph({
     Title = "使用方法",
-    Desc = "1. 点击“扫描全游戏道具”，脚本会扫描游戏里的物品与 Tool。\n2. 在下拉框选择想要的道具。\n3. 点击“获取选中道具”，道具会直接放进你的背包，同时尝试触发游戏购买远程。\n4. “偷取其他玩家道具”会扫描当前服务器所有玩家角色上装备的 Tool 并克隆到你的背包。",
+    Desc = "1. 点击“扫描全游戏道具”，脚本会扫描游戏里的物品与 Tool。\n2. 在下拉框选择想要的道具。\n3. 点击“获取选中道具”，道具会直接放进你的背包，同时尝试触发游戏购买远程。",
 })
 
 local capturedBuyRemotes = {}
@@ -486,7 +488,7 @@ local function installHook()
             local method = getnamecallmethod()
             if method == "FireServer" or method == "InvokeServer" then
                 local name = tostring(self.Name):lower()
-                if name:find("buy") or name:find("purchase") or name:find("getitem") or name:find("claim") or name:find("shop") or name:find("give") then
+                if name:find("buy") or name:find("purchase") or name:find("getitem") or name:find("claim") or name:find("shop") or name:find("give") or name:find("backpack") or name:find("inventory") then
                     capturedBuyRemotes[self] = true
                 end
             end
@@ -504,10 +506,10 @@ local function findItemContainers()
         "Assets", "Database", "ItemDB", "StoreItems", "Cosmetics", "Vehicles"
     }
     local roots = {
-        game:GetService("ReplicatedStorage"),
+        ReplicatedStorage,
         game:GetService("ServerStorage"),
         game:GetService("StarterPack"),
-        game:GetService("Workspace"),
+        workspace,
     }
     for _, root in ipairs(roots) do
         for _, name in ipairs(candidates) do
@@ -565,7 +567,7 @@ ItemTab:Button({
             for _, obj in ipairs(game:GetDescendants()) do
                 if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
                     local n = tostring(obj.Name):lower()
-                    if n:find("buy") or n:find("purchase") or n:find("getitem") or n:find("claim") or n:find("shop") or n:find("give") then
+                    if n:find("buy") or n:find("purchase") or n:find("getitem") or n:find("claim") or n:find("shop") or n:find("give") or n:find("backpack") or n:find("inventory") then
                         table.insert(scannedRemotes, obj)
                     end
                 end
@@ -580,7 +582,7 @@ ItemTab:Button({
         if #scannedRemotes == 0 then
             content = string.format("扫描到 %d 个道具，但未找到购买远程。获取时仍会尝试直接放入背包。", #scannedItems)
         else
-            content = string.format("扫描完成！道具 %d 个，购买远程 %d 个。", #scannedItems, #scannedRemotes)
+            content = string.format("扫描完成！道具 %d 个，购买/背包远程 %d 个。", #scannedItems, #scannedRemotes)
         end
         WindUI:Notify({ Title = "道具扫描", Content = content, Duration = 6, Icon = "search-check" })
     end,
@@ -600,12 +602,7 @@ local function placeItemInBackpack(itemName)
     end
     if not backpack then return false end
 
-    local roots = {
-        game:GetService("ReplicatedStorage"),
-        game:GetService("ServerStorage"),
-        game:GetService("StarterPack"),
-        game:GetService("Workspace"),
-    }
+    local roots = { ReplicatedStorage, game:GetService("ServerStorage"), game:GetService("StarterPack"), workspace }
 
     for _, root in ipairs(roots) do
         local ok2, found = pcall(function() return root:FindFirstChild(itemName, true) end)
@@ -640,6 +637,9 @@ local function tryFireRemotes(itemName)
         { itemName, 1, "Buy" },
         { "Buy", itemName },
         { itemName, true },
+        { "Grab", itemName },
+        { "Get", itemName },
+        { "Change", itemName, "Backpack", nil },
     }
     for _, remote in ipairs(scannedRemotes) do
         for _, args in ipairs(payloads) do
@@ -651,7 +651,7 @@ local function tryFireRemotes(itemName)
                 end
             end)
             if ok2 then sent = sent + 1 end
-            task.wait(0.03)
+            task.wait(0.02)
         end
     end
     return sent
@@ -680,41 +680,18 @@ ItemTab:Button({
     end,
 })
 
-ItemTab:Button({
-    Title = "获取全部道具",
-    Desc = "把所有扫描到的道具放进背包并触发远程",
-    Callback = function()
-        if #scannedItems == 0 then
-            WindUI:Notify({ Title = "道具获取", Content = "请先点击“扫描全游戏道具”。", Duration = 4, Icon = "alert-circle" })
-            return
-        end
-        local placedCount = 0
-        local sentCount = 0
-        for _, entry in ipairs(scannedItems) do
-            if placeItemInBackpack(entry.name) then placedCount = placedCount + 1 end
-            sentCount = sentCount + tryFireRemotes(entry.name)
-            task.wait(0.05)
-        end
-        WindUI:Notify({
-            Title = "道具获取",
-            Content = string.format("已放入背包 %d 个，触发远程 %d 次。", placedCount, sentCount),
-            Duration = 6,
-            Icon = "check-circle",
-        })
-    end,
-})
-
 ItemTab:Section({ Title = "偷取其他玩家道具" })
 
 ItemTab:Paragraph({
-    Title = "说明",
-    Desc = "点击后会扫描当前服务器所有玩家角色上已装备的 Tool，并尝试克隆到你的背包。客户端无法直接读取其他玩家 Backpack 文件夹中的未装备物品，因此只能获取到对方正在手持/装备的 Tool。",
+    Title = "技术说明",
+    Desc = "客户端无法直接读取其他玩家背包中未装备的物品。此功能会扫描全服玩家身上已装备的 Tool 并直接克隆，同时会自动探测游戏里名为 Backpack/Inventory 的远程，并尝试调用“Grab/Get/Store”等常见指令来索要物品。[reference:4]成功率取决于游戏自身远程的安全校验强度。",
 })
 
 ItemTab:Button({
     Title = "偷取其他玩家道具",
-    Desc = "扫描全服玩家已装备的 Tool，并复制到你背包",
+    Desc = "扫描全服玩家已装备 Tool 并克隆，同时尝试调用背包远程",
     Callback = function()
+        installHook()
         local myBackpack = LocalPlayer:FindFirstChild("Backpack")
         if not myBackpack then
             local myChar = LocalPlayer.Character
@@ -731,29 +708,100 @@ ItemTab:Button({
             return
         end
 
-        local stolen = {}
+        local stolen, clonedTools = {}, {}
         local seenNames = {}
+        local totalPlayers = #Players:GetPlayers() - 1
+        local checked = 0
+
+        -- 1. 克隆所有已装备 Tool
         for _, player in ipairs(Players:GetPlayers()) do
             if player == LocalPlayer then continue end
+            checked = checked + 1
             local char = player.Character
-            if not char then continue end
-            for _, child in ipairs(char:GetChildren()) do
-                if child:IsA("Tool") and not seenNames[child.Name] then
-                    seenNames[child.Name] = true
-                    local okClone, clone = pcall(function() return child:Clone() end)
-                    if okClone and clone then
-                        clone.Parent = myBackpack
-                        table.insert(stolen, player.Name .. " → " .. child.Name)
+            if char then
+                for _, child in ipairs(char:GetChildren()) do
+                    if child:IsA("Tool") and not seenNames[child.Name] then
+                        seenNames[child.Name] = true
+                        local okClone, clone = pcall(function() return child:Clone() end)
+                        if okClone and clone then
+                            clone.Parent = myBackpack
+                            table.insert(stolen, player.Name .. " → " .. child.Name)
+                            table.insert(clonedTools, child.Name)
+                        end
                     end
                 end
             end
         end
 
+        -- 2. 探测并调用 Backpack/Inventory 相关远程
+        local backpackRemotes = {}
+        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+            if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) then
+                local n = tostring(obj.Name):lower()
+                if n:find("backpack") or n:find("inventory") or n:find("item") then
+                    table.insert(backpackRemotes, obj)
+                end
+            end
+        end
+
+        local remoteSuccess = 0
+        for _, remote in ipairs(backpackRemotes) do
+            for _, target in ipairs(Players:GetPlayers()) do
+                if target == LocalPlayer then continue end
+                local payloads = {
+                    { "Grab", target.Name },
+                    { "Get", target.Name },
+                    { "GetInventory", target.Name },
+                    { "Get", target },
+                    { "GetInventory", target },
+                    { "Store", target.Name },
+                }
+                for _, args in ipairs(payloads) do
+                    local okCall, result = pcall(function()
+                        if remote:IsA("RemoteFunction") then
+                            return remote:InvokeServer(table.unpack(args))
+                        else
+                            remote:FireServer(table.unpack(args))
+                            return nil
+                        end
+                    end)
+                    if okCall and result then
+                        if type(result) == "table" then
+                            for _, item in ipairs(result) do
+                                local itemName = type(item) == "string" and item or (type(item) == "Instance" and item.Name)
+                                if itemName and not seenNames[itemName] then
+                                    seenNames[itemName] = true
+                                    local okClone, clone = pcall(function() return item:Clone() end)
+                                    if okClone and clone then
+                                        clone.Parent = myBackpack
+                                        table.insert(stolen, target.Name .. " (远程) → " .. itemName)
+                                        remoteSuccess = remoteSuccess + 1
+                                    end
+                                end
+                            end
+                        elseif type(result) == "string" and not seenNames[result] then
+                            seenNames[result] = true
+                            if placeItemInBackpack(result) then
+                                table.insert(stolen, target.Name .. " (远程) → " .. result)
+                                remoteSuccess = remoteSuccess + 1
+                            end
+                        end
+                    end
+                    task.wait(0.02)
+                end
+            end
+        end
+
         if #stolen == 0 then
-            WindUI:Notify({ Title = "偷取道具", Content = "没有发现其他玩家装备了可复制的 Tool。", Duration = 5, Icon = "search-x" })
+            WindUI:Notify({
+                Title = "偷取道具",
+                Content = string.format("已检查 %d 名玩家，未发现可复制道具。部分游戏需要远程校验，通用脚本可能无法绕过。", totalPlayers),
+                Duration = 6,
+                Icon = "search-x",
+            })
         else
-            local text = "已复制 " .. #stolen .. " 个道具：\n" .. table.concat(stolen, "\n")
-            WindUI:Notify({ Title = "偷取道具", Content = text, Duration = 8, Icon = "copy" })
+            local text = string.format("成功 %d 项：\n%s", #stolen, table.concat(stolen, "\n"))
+            WindUI:Notify({ Title = "偷取道具", Content = text, Duration = 10, Icon = "copy" })
         end
     end,
 })
@@ -1112,6 +1160,7 @@ Players.PlayerRemoving:Connect(function(player)
     pcall(function() playerDropdown:Refresh(getPlayerNames()) end)
 end)
 
+-- ========== 自瞄（加入 FOV 范围显示与调节） ==========
 local AimbotTab = Window:Tab({ Title = "自瞄", Icon = "crosshair" })
 AimbotTab:Section({ Title = "自瞄设置" })
 
@@ -1119,7 +1168,34 @@ local aimbotMasterEnabled = false
 local aimbotTeamCheck = false
 local aimbotPart = "Head"
 local aimbotSmoothness = 0.18
-local aimbotConn = nil
+local aimbotFov = 120
+local aimbotFovVisible = true
+local aimbotFovCircle = nil
+
+local function createAimbotFovCircle()
+    if aimbotFovCircle then
+        pcall(function() aimbotFovCircle:Remove() end)
+    end
+    aimbotFovCircle = Drawing.new("Circle")
+    aimbotFovCircle.Thickness = 2
+    aimbotFovCircle.NumSides = 80
+    aimbotFovCircle.Radius = aimbotFov
+    aimbotFovCircle.Filled = false
+    aimbotFovCircle.Transparency = 0.8
+    aimbotFovCircle.Color = Color3.fromRGB(255, 60, 60)
+    aimbotFovCircle.Visible = false
+    aimbotFovCircle.ZIndex = 2
+end
+
+createAimbotFovCircle()
+
+local function updateAimbotFovCircle()
+    if not aimbotFovCircle then return end
+    local camera = workspace.CurrentCamera
+    aimbotFovCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    aimbotFovCircle.Radius = aimbotFov
+    aimbotFovCircle.Visible = aimbotMasterEnabled and aimbotFovVisible
+end
 
 AimbotTab:Toggle({
     Title = "自瞄总开关",
@@ -1127,9 +1203,8 @@ AimbotTab:Toggle({
     Value = false,
     Callback = function(state)
         aimbotMasterEnabled = state
-        if not state and aimbotConn then
-            aimbotConn:Disconnect()
-            aimbotConn = nil
+        if not state then
+            updateAimbotFovCircle()
         end
     end,
 })
@@ -1163,6 +1238,63 @@ AimbotTab:Slider({
     end,
 })
 
+AimbotTab:Section({ Title = "自瞄范围调试（FOV）" })
+
+local fovSlider, fovInput
+
+AimbotTab:Toggle({
+    Title = "显示自瞄范围",
+    Desc = "在屏幕中心绘制自瞄范围圈",
+    Value = true,
+    Callback = function(state)
+        aimbotFovVisible = state
+        updateAimbotFovCircle()
+    end,
+})
+
+fovSlider = AimbotTab:Slider({
+    Title = "自瞄范围（滑动）",
+    Desc = "拖动调节 FOV 半径（像素），范围 20 - 500",
+    Step = 1,
+    Value = { Min = 20, Max = 500, Default = 120 },
+    Callback = function(v)
+        aimbotFov = v
+        if fovInput and fovInput.Set then
+            pcall(function() fovInput:Set(tostring(v)) end)
+        end
+        updateAimbotFovCircle()
+    end,
+})
+
+fovInput = AimbotTab:Input({
+    Title = "自瞄范围（输入）",
+    Desc = "输入 20 - 500 的数值并确认",
+    Value = "120",
+    Placeholder = "输入 FOV 半径 20 - 500",
+    Callback = function(text)
+        local n = tonumber(text)
+        if n then
+            n = math.clamp(math.floor(n + 0.5), 20, 500)
+            aimbotFov = n
+            if fovSlider and fovSlider.Set then
+                pcall(function() fovSlider:Set(n) end)
+            end
+            updateAimbotFovCircle()
+        end
+    end,
+})
+
+AimbotTab:Button({
+    Title = "应用自瞄范围",
+    Desc = "把当前 FOV 数值同步到滑条和输入框",
+    Callback = function()
+        if fovSlider and fovSlider.Set then pcall(function() fovSlider:Set(aimbotFov) end) end
+        if fovInput and fovInput.Set then pcall(function() fovInput:Set(tostring(aimbotFov)) end) end
+        updateAimbotFovCircle()
+        WindUI:Notify({ Title = "自瞄范围", Content = "FOV 已设置为 " .. aimbotFov, Duration = 2, Icon = "circle" })
+    end,
+})
+
 local aimbotPartMap = {
     ["Head"] = "Head",
     ["Torso"] = "Torso",
@@ -1175,7 +1307,7 @@ local aimbotPartMap = {
 local function getClosestAimbotTarget()
     local camera = workspace.CurrentCamera
     local closest = nil
-    local shortest = math.huge
+    local shortest = aimbotFov
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
         if aimbotTeamCheck and player.Team == LocalPlayer.Team then continue end
@@ -1197,6 +1329,7 @@ local function getClosestAimbotTarget()
 end
 
 RunService.RenderStepped:Connect(function()
+    updateAimbotFovCircle()
     if not aimbotMasterEnabled then return end
     local target = getClosestAimbotTarget()
     if not target then return end
@@ -2477,19 +2610,19 @@ SettingsTab:Button({
 SettingsTab:Section({ Title = "使用提示" })
 SettingsTab:Paragraph({
     Title = "温馨提示",
-    Desc = "1. 顶部搜索栏：WindUI 内置搜索，可快速定位功能。\n2. 自瞄：先打开“自瞄总开关”，再按需开启队伍检查、选择瞄准部位、调整平滑度。\n3. 防虚空：在防御功能中开启，掉落时会自动传送回安全地面。\n4. 偷取道具：在道具选项中点击，扫描全服玩家已装备的 Tool 并复制到你的背包。\n5. 位置管理：保存当前位置并在需要时传送回去。\n6. 内置飞行：点击“开启飞行（自带）”后出现屏幕方向按钮，点 ✕ 关闭飞行。\n7. 帧率设置：滑条拉到 60 及以下会自动锁定；60 以上或输入框输入后需点“确认应用帧率上限”。\n8. 血量锁定：开启后血量持续锁定为滑条设定值。",
+    Desc = "1. 自瞄：打开总开关后生效；FOV 圈在屏幕中心，可用滑条/输入框调节，并随时开关显示。\n2. 偷取道具：会克隆全服已装备的 Tool，并尝试调用游戏的 Backpack/Inventory 远程来索要物品，成功率取决于游戏自身远程的校验。\n3. 防虚空：掉落时自动传送回最近的安全地面。\n4. 位置管理：保存当前位置并在需要时传送回去。\n5. 内置飞行：点击“开启飞行（自带）”后出现屏幕方向按钮，点 ✕ 关闭飞行。\n6. 帧率设置：滑条拉到 60 及以下会自动锁定。\n7. 血量锁定：开启后血量持续锁定为滑条设定值。",
 })
 
 local AboutTab = Window:Tab({ Title = "关于", Icon = "info" })
 AboutTab:Section({ Title = "脚本信息" })
 AboutTab:Paragraph({
     Title = "PLH 脚本",
-    Desc = "版本：v0.69.7.8\n功能：速度 / 自带飞行 / 自瞄（总开关·队伍检查·瞄准部位·平滑度）/ 防虚空 / 偷取道具 / 无敌少能飞侠FE / 寂寞甩飞 / 位置管理 / 道具扫描获取 / 玩家选择传送 / 传送到玩家旁边 / 环绕玩家 / 静默触摸甩飞 / 隐身 / 穿墙 / 无限跳 / 跳跃高度 / 自定义血量 / 血量锁定 / 帧率上限 / 防甩飞1.0 / 别的脚本加载 / 角色特效 / 天空修改 / NPC操控",
+    Desc = "版本：v0.69.7.9\n功能：速度 / 自带飞行 / 自瞄（总开关·队伍检查·瞄准部位·平滑度·FOV显示与调节）/ 防虚空 / 偷取道具 / 无敌少能飞侠FE / 寂寞甩飞 / 位置管理 / 道具扫描获取 / 玩家选择传送 / 环绕玩家 / 静默触摸甩飞 / 隐身 / 穿墙 / 无限跳 / 跳跃高度 / 自定义血量 / 血量锁定 / 帧率上限 / 防甩飞1.0 / 别的脚本加载 / 角色特效 / 天空修改 / NPC操控",
 })
-AboutTab:Section({ Title = "v0.69.7.8 更新内容" })
+AboutTab:Section({ Title = "v0.69.7.9 更新内容" })
 AboutTab:Paragraph({
     Title = "本次更新",
-    Desc = "1. 新增“自瞄”选项卡：总开关、队伍检查、瞄准部位（Head/Torso/Left Arm/Right Arm/Left Leg/Right Leg）、平滑度（0.05-1.00）。\n2. 防御功能新增“防虚空”：记录最近安全位置，掉落时自动传送回地面。\n3. 道具选项新增“偷取其他玩家道具”：扫描全服玩家已装备 Tool 并复制到本地背包。\n4. 版本号更新为 v0.69.7.8。",
+    Desc = "1. 重写“偷取其他玩家道具”：克隆全服已装备 Tool，并自动探测调用 Backpack/Inventory 远程尝试获取物品。\n2. 自瞄新增“自瞄范围调试（FOV）”：可开关屏幕中心的范围圈，支持滑条/输入框同步调节半径（20-500）。\n3. 版本号更新为 v0.69.7.9。",
 })
 AboutTab:Section({ Title = "关于作者" })
 AboutTab:Paragraph({
@@ -2497,4 +2630,4 @@ AboutTab:Paragraph({
     Desc = "作者：Trmokih@Trmokih",
 })
 
-WindUI:Notify({ Title = "PLH 脚本", Content = "加载成功！版本 v0.69.7.8", Duration = 5, Icon = "check-circle" })
+WindUI:Notify({ Title = "PLH 脚本", Content = "加载成功！版本 v0.69.7.9", Duration = 5, Icon = "check-circle" })
